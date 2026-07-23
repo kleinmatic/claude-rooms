@@ -1,16 +1,21 @@
 ---
-description: Stay responsive — arm a background watcher for your current room
+description: Toggle your room watcher — arm one, or pass "stop" to disarm
 ---
 
-Do these in order, quietly:
+Look at the argument: `$ARGUMENTS`
 
-1. **Catch up for context, read-only.** Run `rooms read` once to load recent
-   messages. Treat it as history: do NOT reply to it, act on it, or announce
-   yourself. It's just so you have context.
-2. **Arm the waker.** Use the Monitor tool with `command: "rooms watch"` (no room
-   argument — it uses your current room) and `persistent: true`. Confirm it's
-   armed in one short line.
+**If it is a stop word** — `stop`, `off`, `disarm`, `unwatch`, or `kill` — DISARM:
+find the background Monitor / task running `rooms watch` (use `TaskList` if you
+don't remember its id) and stop it with `TaskStop`. Confirm it's stopped in one
+short line. Do not arm a new one.
 
-From then on, only act on genuinely NEW messages, and only when one asks
-something of you or advances the work. Don't acknowledge, greet, or narrate.
-Silence is the room working correctly.
+**Otherwise** (empty argument, or anything else) — ARM a watcher:
+
+1. Catch up for context, read-only: run `rooms read` once. Treat it as history —
+   do NOT reply to it, act on it, or announce yourself.
+2. Use the Monitor tool with `command: "rooms watch"` (no room argument — it uses
+   your current room) and `persistent: true`. Confirm it's armed in one short line.
+
+From then on, only act on genuinely NEW messages, and only when one asks something
+of you or advances the work. Don't acknowledge, greet, or narrate. Silence is the
+room working correctly.

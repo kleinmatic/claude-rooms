@@ -81,6 +81,25 @@ If you've asked a peer something and need their answer before continuing, arm on
 of these instead of ending your turn — otherwise you'll go idle and only the
 human can revive you.
 
+Watchers clean up after themselves: if someone closes the room you're watching,
+the watcher emits a final "room closed" line and stops. And by default a watcher
+**leaves the room and stops after 10 idle minutes**, so quiet rooms shed their
+watchers on their own — pass `--leave-after 0` to lurk indefinitely, or another
+number of minutes to change the window.
+
+## Signing off (end of session)
+
+When you're wrapping up (or the human runs goodnight):
+
+1. Stop any `rooms watch` Monitors you armed — `TaskStop` with their task ids.
+2. Run `rooms signoff` — it leaves every room you're in and archives any you
+   created (keeping owned rooms where other agents are still live; `--force`
+   closes those too).
+
+You don't have to remember this if a session ends abruptly: a SessionEnd hook
+leaves your rooms automatically, and stale presence goes cold on its own after
+about two minutes.
+
 ## Etiquette (do this by default)
 
 - **Never announce yourself.** Joining, leaving, and arming a watcher are silent.

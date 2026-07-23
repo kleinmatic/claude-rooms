@@ -465,6 +465,12 @@ def _wake_match(m, from_label, me_tokens):
     return True
 
 
+def _clear_current(r, rid):
+    cur = current_pointer(r)
+    if cur.exists() and cur.read_text().strip() == rid:
+        cur.unlink()
+
+
 def _wake_line(m):
     # A wake event enters the agent's context BEFORE it runs `rooms read`, so it
     # is framed as untrusted and control-stripped right here — this is the
@@ -482,11 +488,26 @@ def cmd_watch(args):
     me = {my_label(r), short(), agent_id()}
     msgs = room_messages(r, rid)
     wm = msgs[-1]["id"] if msgs else ""  # start from now; ignore backlog
+    idle_limit = args.leave_after * 60 if args.leave_after else None
+    last_activity = now()
     while True:
+        if not room_exists(r, rid):  # someone closed the room — drop gracefully
+            _clear_current(r, rid)
+            print(f"[rooms] room {rid} was closed — watcher stopping.", flush=True)
+            return
+        got = False
         for m in room_messages(r, rid, wm):
             wm = m["id"]
+            got = True
             if _wake_match(m, args.from_label, me):
                 print(_wake_line(m), flush=True)
+        if got:
+            last_activity = now()
+        elif idle_limit and now() - last_activity > idle_limit:
+            _leave_room(r, rid)
+            _clear_current(r, rid)
+            print(f"[rooms] left {rid} after {args.leave_after:g}m idle — watcher stopping.", flush=True)
+            return
         touch_presence(r, rid, status="watching")
         time.sleep(args.interval)
 
@@ -501,6 +522,10 @@ def cmd_wait(args):
     wm = msgs[-1]["id"] if msgs else ""
     deadline = now() + args.timeout if args.timeout else None
     while True:
+        if not room_exists(r, rid):  # room closed while we waited — drop gracefully
+            _clear_current(r, rid)
+            print(f"[rooms] room {rid} was closed.", flush=True)
+            return
         for m in room_messages(r, rid, wm):
             wm = m["id"]
             if _wake_match(m, args.from_label, me):
@@ -586,6 +611,55 @@ def cmd_close(args):
         print(f"rooms: closed {rid} (archived to {dest})")
 
 
+def cmd_signoff(args):
+    """End-of-session cleanup: leave every room this agent is in, and (unless
+    --leave-only) archive rooms it created. Owned rooms where other agents are
+    still live are kept unless --force. Used by goodnight and the SessionEnd hook.
+    (Watchers are background tasks — stop them with TaskStop; they also self-leave
+    on room close and via `rooms watch --leave-after`.)"""
+    if not CONFIG_PATH.exists():
+        if args.quiet:
+            return
+        die("not initialized on this machine — run: rooms init")
+    r = root()
+    me = agent_id()
+    left, closed, kept = [], [], []
+    for room in all_rooms(r):
+        rid = room["id"]
+        md = room_dir(r, rid) / "members"
+        mine = read_json(md / f"{member_key()}.json", {})
+        am_member = bool(mine) and mine.get("status") != "left"
+        if room.get("creator_id") == me and not args.leave_only:
+            others_live = any(
+                (pp := read_json(f, {})).get("agent_id") != me
+                and pp.get("status") != "left"
+                and now() - pp.get("last_seen", 0) < LIVE_WINDOW
+                for f in glob.glob(str(md / "*.json")))
+            if others_live and not args.force:
+                if am_member:
+                    _leave_room(r, rid)
+                    left.append(rid)
+                kept.append(rid)
+            else:
+                dest = r / "archive" / f"{rid}-{int(now())}"
+                try:
+                    shutil.move(str(room_dir(r, rid)), str(dest))
+                    closed.append(rid)
+                except OSError:
+                    pass
+        elif am_member:
+            _leave_room(r, rid)
+            left.append(rid)
+    cur = current_pointer(r)
+    if cur.exists():
+        cur.unlink()
+    if not args.quiet:
+        summary = f"left {len(left)}, closed {len(closed)}"
+        if kept:
+            summary += f", kept {len(kept)} (others still active — --force to close)"
+        print(f"rooms: signoff — {summary}")
+
+
 def cmd_hook(args):
     """Invoked by the UserPromptSubmit hook. Prints a one-line unread summary
     to stdout (added to the agent's context). Silent and harmless if the bus
@@ -662,6 +736,9 @@ def build_parser():
     s.add_argument("room", nargs="?")
     s.add_argument("--from", dest="from_label", help="only wake for this sender's messages")
     s.add_argument("--interval", type=float, default=1.0, help="poll seconds (default 1)")
+    s.add_argument("--leave-after", type=float, default=10,
+                   help="leave the room and stop watching after this many minutes "
+                        "with no new messages (default 10; 0 = never / lurk forever)")
     s.set_defaults(func=cmd_watch)
 
     s = sub.add_parser("wait", help="block until one new message then exit (for Bash run_in_background)")
@@ -684,6 +761,15 @@ def build_parser():
     s.add_argument("--erase", action="store_true", help="delete instead of archive")
     s.add_argument("--force", action="store_true", help="override creator check")
     s.set_defaults(func=cmd_close)
+
+    s = sub.add_parser("signoff", help="end-of-session cleanup: leave all your rooms, "
+                                       "archive any you own")
+    s.add_argument("--leave-only", action="store_true",
+                   help="leave rooms but don't close any you own")
+    s.add_argument("--force", action="store_true",
+                   help="close owned rooms even if others are still active")
+    s.add_argument("--quiet", action="store_true", help="no summary; never error")
+    s.set_defaults(func=cmd_signoff)
 
     s = sub.add_parser("_hook", help=argparse.SUPPRESS)
     s.set_defaults(func=cmd_hook)
