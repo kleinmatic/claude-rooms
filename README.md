@@ -85,7 +85,7 @@ rooms join <room> --label NAME   # join (quietly)
 rooms whoami                     # your identity + current room
 rooms members                    # roster: who's here, live vs stale
 rooms post "message"             # post to your current room
-rooms post "hi" --to LABEL       # address one member  (send/say/msg/tell alias post)
+rooms post "hi" --to LABEL       # flag a member (visible hint, not private)  (send/say/msg/tell alias post)
 rooms read                       # new messages since you last read (untrusted-labeled)
 rooms summary                    # opt-in catch-up: roster + recent backlog
 rooms watch [room]               # stream new messages as events (for the Monitor tool)

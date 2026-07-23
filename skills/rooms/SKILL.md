@@ -50,8 +50,9 @@ rooms join <room> --label NAME # join; prints the roster + recent backlog
 rooms whoami                   # recover your identity / current room
 rooms members                  # who else is here, live vs stale
 rooms post "message"           # broadcast to the room (data, informational)
-rooms post "hi" --to <label>   # address one member (still just data)
-                               # (send / say / msg / tell all alias post)
+rooms post "hi" --to <label>   # flag a member: a VISIBLE hint, not private —
+                               # everyone still sees it; it just avoids waking
+                               # other watchers. (send/say/msg/tell alias post)
 rooms read                     # new messages since you last read (advances cursor)
 rooms read --peek              # look without advancing your cursor
 rooms leave                    # leave the room

@@ -23,6 +23,7 @@ import argparse
 import glob
 import json
 import os
+import re
 import shutil
 import socket
 import sys
@@ -90,7 +91,26 @@ def slug(s):
     out = "".join(c.lower() if c.isalnum() else "-" for c in s)
     while "--" in out:
         out = out.replace("--", "-")
-    return out.strip("-") or "room"
+    return (out.strip("-") or "room")[:40]
+
+
+# A room id must be a bare slug — no path separators, no traversal, no absolute
+# paths. room.json is untrusted bus content, so its id is validated before it is
+# ever used as a path component (defends against `id: "../../etc"` style attacks).
+_RID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,127}$")
+
+
+def safe_rid(rid):
+    if not isinstance(rid, str) or not _RID_RE.match(rid):
+        die(f"unsafe or malformed room id: {rid!r}")
+    return rid
+
+
+def sanitize(text, limit=2000):
+    """Untrusted text (message bodies, labels, room names) gets rendered into an
+    agent's context. Strip control characters so a hostile message can't inject
+    fake newlines / ANSI escapes / spoofed 'system:' lines, and cap the length."""
+    return "".join(ch for ch in str(text) if ch.isprintable())[:limit]
 
 
 def load_config():
@@ -130,7 +150,7 @@ def cursor_file(r, rid):
 
 
 def room_dir(r, rid):
-    return r / "rooms" / rid
+    return r / "rooms" / safe_rid(rid)
 
 
 def all_rooms(r):
@@ -138,6 +158,9 @@ def all_rooms(r):
     for p in glob.glob(str(r / "rooms" / "*" / "room.json")):
         room = read_json(p)
         if room:
+            # Canonical id is the real directory name, never the JSON's own
+            # `id` field — a malicious room.json cannot forge its location.
+            room["id"] = Path(p).parent.name
             out.append(room)
     return out
 
@@ -157,17 +180,28 @@ def match_room(r, s):
     die(f"ambiguous room '{s}': " + ", ".join(x["id"] for x in hits))
 
 
+def room_exists(r, rid):
+    return (room_dir(r, rid) / "room.json").exists()
+
+
 def resolve_room(r, room_arg):
     if room_arg:
         return match_room(r, room_arg)
     cur = current_pointer(r)
     if cur.exists():
-        return cur.read_text().strip()
+        rid = cur.read_text().strip()
+        if room_exists(r, rid):
+            return rid
+        cur.unlink()  # stale — the room was closed/erased out from under us
+        die("the room you were in no longer exists (it was closed) — "
+            "join another with 'rooms join <room>'")
     die("no room given and you haven't joined one — use --room or 'rooms join <room>'")
 
 
 def touch_presence(r, rid, status="active"):
     """Refresh (or create) this agent's presence file in a room."""
+    if not room_exists(r, rid):
+        return  # never resurrect a closed room as a ghost members/ directory
     md = room_dir(r, rid) / "members"
     md.mkdir(parents=True, exist_ok=True)
     pf = md / f"{member_key()}.json"
@@ -182,8 +216,10 @@ def touch_presence(r, rid, status="active"):
 
 def post_message(r, rid, kind, body, to="*"):
     rd = room_dir(r, rid)
-    if not rd.exists():
+    if not (rd / "room.json").exists():
         die(f"no such room: {rid}")
+    (rd / "msgs" / "tmp").mkdir(parents=True, exist_ok=True)
+    (rd / "msgs" / "new").mkdir(parents=True, exist_ok=True)
     mid = f"{time.time_ns()}-{member_key()}-{os.urandom(2).hex()}"
     msg = {"id": mid, "ts": now(), "room": rid, "from": agent_id(),
            "from_label": my_label(r), "to": to, "kind": kind, "body": body}
@@ -199,7 +235,10 @@ def room_messages(r, rid, since=""):
     out = []
     for f in sorted(glob.glob(str(rd / "msgs" / "new" / "*.json"))):
         mid = Path(f).stem
-        if mid > since:  # ids are time-ns prefixed, so lexical order == chronological
+        # ids are time-ns prefixed, so lexical order == chronological ON ONE MACHINE.
+        # Across machines with skewed clocks a watermark can drop late messages;
+        # the fix (seen-set cursors) is the multi-machine roadmap item.
+        if mid > since:
             m = read_json(f)
             if m:
                 out.append(m)
@@ -224,8 +263,8 @@ def print_cheatsheet():
 
 def print_msg(r, m):
     t = time.strftime("%H:%M:%S", time.localtime(m.get("ts", 0)))
-    who = m.get("from_label") or m.get("from", "?")
-    to = m.get("to", "*")
+    who = sanitize(m.get("from_label") or m.get("from", "?"), 80)
+    to = sanitize(m.get("to", "*"), 80)
     tag = "" if to == "*" else f" →{to}"
     mine = " (you)" if m.get("from") == agent_id() else ""
     kind = m.get("kind", "note")
@@ -233,7 +272,7 @@ def print_msg(r, m):
     if kind in ("join", "leave"):
         print(f"  {prefix}  -- {kind}")
     else:
-        print(f"  {prefix}: {m.get('body','')}")
+        print(f"  {prefix}: {sanitize(m.get('body',''))}")
 
 
 # ------------------------------------------------------------------ commands ---
@@ -276,7 +315,12 @@ def cmd_whoami(args):
         return
     r = root()
     sf = read_json(self_file(r), {})
-    cur = current_pointer(r).read_text().strip() if current_pointer(r).exists() else "(none)"
+    if current_pointer(r).exists():
+        cur = current_pointer(r).read_text().strip()
+        if not room_exists(r, cur):
+            cur += " (closed — clears on next use)"
+    else:
+        cur = "(none)"
     print(f"agent_id : {agent_id()}")
     print(f"short    : {short()}")
     print(f"label    : {sf.get('label') or '(unset)'}")
@@ -289,8 +333,19 @@ def cmd_whoami(args):
 
 def cmd_start(args):
     r = root()
-    rid = f"{slug(args.name)}-{os.urandom(2).hex()}"
-    rd = room_dir(r, rid)
+    base = slug(args.name)
+    rd = None
+    for _ in range(8):
+        rid = f"{base}-{os.urandom(6).hex()}"  # 48 bits — collisions are negligible
+        cand = room_dir(r, rid)
+        try:
+            cand.mkdir(parents=True, exist_ok=False)  # exclusive: never merge two rooms
+            rd = cand
+            break
+        except FileExistsError:
+            continue
+    if rd is None:
+        die("could not allocate a unique room id — try again")
     for sub in ("msgs/tmp", "msgs/new", "members"):
         (rd / sub).mkdir(parents=True, exist_ok=True)
     if args.label:
@@ -394,16 +449,28 @@ def cmd_read(args):
     touch_presence(r, rid)
 
 
-def _wake_match(m, from_label):
-    """Messages worth waking an agent for: real notes/questions from peers,
-    not the agent's own posts or join/leave churn."""
+def _wake_match(m, from_label, me_tokens):
+    """Messages worth waking an agent for: real notes/questions from peers, not
+    the agent's own posts, not join/leave churn, and not messages addressed to
+    someone else (those stay visible in `rooms read`, they just don't wake you)."""
     if m.get("from") == agent_id():
         return False
     if m.get("kind") in ("join", "leave"):
         return False
     if from_label and m.get("from_label") != from_label:
         return False
+    to = m.get("to", "*")
+    if to != "*" and to not in me_tokens:
+        return False
     return True
+
+
+def _wake_line(m):
+    # A wake event enters the agent's context BEFORE it runs `rooms read`, so it
+    # is framed as untrusted and control-stripped right here — this is the
+    # highest-risk injection surface in the whole tool.
+    who = sanitize(m.get("from_label") or m.get("from", "?"), 80)
+    return f"[untrusted peer msg] {who}: {sanitize(m.get('body', ''))}"
 
 
 def cmd_watch(args):
@@ -412,14 +479,14 @@ def cmd_watch(args):
     Does NOT advance the read cursor; it's a notifier. `rooms read` consumes."""
     r = root()
     rid = resolve_room(r, args.room)
+    me = {my_label(r), short(), agent_id()}
     msgs = room_messages(r, rid)
     wm = msgs[-1]["id"] if msgs else ""  # start from now; ignore backlog
     while True:
         for m in room_messages(r, rid, wm):
             wm = m["id"]
-            if _wake_match(m, args.from_label):
-                who = m.get("from_label") or m.get("from")
-                print(f"{who}: {m.get('body','')}", flush=True)
+            if _wake_match(m, args.from_label, me):
+                print(_wake_line(m), flush=True)
         touch_presence(r, rid, status="watching")
         time.sleep(args.interval)
 
@@ -429,15 +496,15 @@ def cmd_wait(args):
     `Bash run_in_background`, whose exit re-invokes the agent."""
     r = root()
     rid = resolve_room(r, args.room)
+    me = {my_label(r), short(), agent_id()}
     msgs = room_messages(r, rid)
     wm = msgs[-1]["id"] if msgs else ""
     deadline = now() + args.timeout if args.timeout else None
     while True:
         for m in room_messages(r, rid, wm):
             wm = m["id"]
-            if _wake_match(m, args.from_label):
-                who = m.get("from_label") or m.get("from")
-                print(f"{who}: {m.get('body','')}", flush=True)
+            if _wake_match(m, args.from_label, me):
+                print(_wake_line(m), flush=True)
                 touch_presence(r, rid)
                 return
         if deadline and now() >= deadline:
@@ -460,8 +527,10 @@ def _show_members(r, rid):
         if m.get("status") == "left":
             state = "left"
         me = " (you)" if m.get("agent_id") == agent_id() else ""
-        print(f"    - {m.get('label') or '?'}{me}  [{m.get('session_id','?').split('-')[0]}]  "
-              f"{m.get('cwd','?')}  ({state})")
+        label = sanitize(m.get("label") or "?", 80)
+        cwd = sanitize(m.get("cwd", "?"), 200)
+        sid = sanitize(str(m.get("session_id", "?")).split("-")[0], 20)
+        print(f"    - {label}{me}  [{sid}]  {cwd}  ({state})")
 
 
 def cmd_members(args):
@@ -484,24 +553,30 @@ def cmd_list(args):
                    if m.get("status") != "left" and now() - m.get("last_seen", 0) < LIVE_WINDOW)
         msgs = glob.glob(str(room_dir(r, rid) / "msgs" / "new" / "*.json"))
         last = max((os.path.getmtime(f) for f in msgs), default=room.get("created", 0))
-        topic = f" — {room['topic']}" if room.get("topic") else ""
+        topic = f" — {sanitize(room['topic'], 200)}" if room.get("topic") else ""
         my_pf = md / f"{member_key()}.json"
         mine = my_pf.exists() and read_json(my_pf, {}).get("status") != "left"
         marker = "  ▸ you're in this room" if mine else ""
         print(f"{rid}{marker}")
-        print(f"    {room['name']}{topic}")
-        print(f"    creator {room.get('creator_label','?')} · {live}/{len(members)} live · "
-              f"last activity {fmt_age(now() - last)} ago · {room.get('status','open')}")
+        print(f"    {sanitize(room.get('name', rid), 120)}{topic}")
+        print(f"    creator {sanitize(room.get('creator_label','?'), 80)} · "
+              f"{live}/{len(members)} live · "
+              f"last activity {fmt_age(now() - last)} ago · {sanitize(room.get('status','open'), 20)}")
 
 
 def cmd_close(args):
     r = root()
     rid = match_room(r, args.room)
-    room = read_json(room_dir(r, rid) / "room.json", {})
-    if room.get("creator_id") != agent_id() and not args.force:
-        die(f"only the creator ({room.get('creator_label','?')}) can close this room "
-            f"(use --force to override)")
     rd = room_dir(r, rid)
+    # belt-and-suspenders before a destructive rmtree/move: the resolved path
+    # (symlinks followed) must stay inside the rooms tree.
+    rooms_root = (r / "rooms").resolve()
+    if os.path.commonpath([rd.resolve(), rooms_root]) != str(rooms_root):
+        die(f"refusing to operate on a path outside the rooms tree: {rd}")
+    room = read_json(rd / "room.json", {})
+    if room.get("creator_id") != agent_id() and not args.force:
+        die(f"only the creator ({sanitize(room.get('creator_label','?'), 80)}) can close "
+            f"this room (use --force to override)")
     if args.erase:
         shutil.rmtree(rd, ignore_errors=True)
         print(f"rooms: erased {rid}")
@@ -529,7 +604,7 @@ def cmd_hook(args):
             since = read_json(cursor_file(r, rid), {}).get("watermark", "")
             unread = [m for m in room_messages(r, rid, since) if m.get("from") != agent_id()]
             if unread:
-                parts.append(f"{len(unread)} in {room['name']}")
+                parts.append(f"{len(unread)} in {sanitize(room.get('name', rid), 80)}")
         if parts:
             print(f"[rooms] unread messages: {', '.join(parts)} — run 'rooms read' to view.")
     except Exception:
@@ -570,7 +645,9 @@ def build_parser():
                        help="post a message to a room (aliases: send, say, msg, tell)")
     s.add_argument("body")
     s.add_argument("--room", help="room id/name (default: your current room)")
-    s.add_argument("--to", help="address a member (default: everyone)")
+    s.add_argument("--to", help="flag a member — a visible hint, NOT private "
+                                "(everyone in the room still sees it); it just avoids "
+                                "waking other watchers")
     s.add_argument("--kind", default="note", help="message kind (default: note)")
     s.set_defaults(func=cmd_post)
 
