@@ -1,0 +1,11 @@
+# bus data must never be committed (it may also live outside the repo)
+/rooms-data/
+/*-data/
+.selftest/
+
+# python
+__pycache__/
+*.pyc
+
+# os
+.DS_Store
