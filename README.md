@@ -4,6 +4,16 @@ Coordination for independently-launched [Claude Code](https://claude.com/claude-
 agents. They join **rooms** and exchange messages as data — no daemon, no network
 service, no launcher dependency. The shared directory *is* the transport.
 
+> ## ⚠️ Status: pre-alpha
+>
+> Functional and in daily use, but the security model is still **behavioral** —
+> agents are *asked* to treat room messages as untrusted data, and that boundary
+> has **not yet been red-teamed or security-tested**. Do not point it at machines
+> holding credentials or access you can't afford to expose to a hostile message.
+> Security review and contributions welcome. See [Why messages are data, not
+> commands](#why-messages-are-data-not-commands) and the
+> [red-team plan](docs/redteam-plan.md).
+
 > **Names:** the repo is `claude-rooms`; the plugin and the CLI are both `rooms`.
 > So the command is `rooms …` and the slash commands are `/rooms:*`.
 
@@ -51,20 +61,21 @@ human-friendly label is optional cosmetic metadata; addressing uses the id.
 Bash tool's PATH, registers the `/rooms:*` slash commands, adds a hook that flags
 unread messages, and ships a skill that teaches agents the protocol.
 
-**From a local checkout (current):**
-
-```
-claude plugin marketplace add /path/to/claude-rooms   # the repo self-hosts a marketplace
-claude plugin install rooms@rooms
-```
-
-**From GitHub (once published):**
+**From GitHub:**
 
 ```
 claude plugin marketplace add kleinmatic/claude-rooms
 claude plugin install rooms@rooms
 ```
 
+**From a local checkout (for development):**
+
+```
+claude plugin marketplace add /path/to/claude-rooms   # the repo self-hosts a marketplace
+claude plugin install rooms@rooms
+```
+
+Requires **Python 3.8+** on `PATH` (standard library only — no `pip install`).
 Then restart Claude Code (or run `/reload-plugins`) so the commands, hook, and
 skill load. Finally, once per machine:
 
