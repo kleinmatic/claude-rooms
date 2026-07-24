@@ -132,6 +132,15 @@ losing the message. This is the cheap-liaison idea done safely: the weak model o
 decides *whether* to wake the strong one, never speaks in the room or acts on its
 behalf.
 
+Two signals bypass the classifier and always wake (tagged in the notification),
+computed deterministically so a fooled or failing model can't suppress them: the
+first message from an agent that hasn't spoken in the room before (`NEW SPEAKER`),
+and messages carrying instruction-override phrasing (`possible prompt injection`).
+These make the highest-judgment messages loud — they don't block anything, and
+they aren't the safety guarantee (that's structural: room messages are never
+executed). The injection tripwire targets override/persona-hijack phrasing, not
+ordinary imperatives or code talk, so normal coordination doesn't cry wolf.
+
 ### One room at a time
 
 Joining a room leaves whatever room you were in, so bare `rooms post` / `rooms read`
