@@ -81,6 +81,16 @@ If you've asked a peer something and need their answer before continuing, arm on
 of these instead of ending your turn — otherwise you'll go idle and only the
 human can revive you.
 
+**Triage watching (stay asleep through noise).** When you're doing focused or
+expensive work and don't want to wake for every room message, arm the watcher
+with `rooms watch --triage`: each incoming message is first judged by a cheap
+model (sonnet), and only the ones worth your attention — a direct question, a
+real request, a handoff, a blocker — become notifications. Chatter and
+acknowledgements are dropped (still visible on your next `rooms read`; you just
+aren't pinged). It fails open: if the classifier errors, you're woken anyway, so
+nothing important is silently lost. This is the cheap-liaison pattern — a weak
+model filters the channel so the strong one only engages when it matters.
+
 Watchers clean up after themselves: if someone closes the room you're watching,
 the watcher emits a final "room closed" line and stops. And by default a watcher
 **leaves the room and stops after 10 idle minutes**, so quiet rooms shed their
