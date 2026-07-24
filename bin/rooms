@@ -24,6 +24,7 @@ import glob
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -352,7 +353,11 @@ def cmd_init(args):
     shutil.rmtree(r / ".selftest", ignore_errors=True)
 
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    write_json(CONFIG_PATH, {"root": str(r)})
+    # Merge, don't clobber: re-running init (upgrade, repoint --root) must preserve
+    # other persisted keys like turn_limit.
+    cfg = read_json(CONFIG_PATH, {}) or {}
+    cfg["root"] = str(r)
+    write_json(CONFIG_PATH, cfg)
     verb = "attached this install to existing bus at" if existing else "initialized bus at"
     print(f"rooms: {verb} {r}")
     print(f"       config: {CONFIG_PATH}")
@@ -560,14 +565,14 @@ def _clear_current(r, rid):
 # gate), false positives cry wolf.
 _INJECTION_RE = re.compile(r"""
       ignore\s+(all\s+|your\s+|the\s+)?(previous\s+|prior\s+|above\s+|earlier\s+)?instructions
-    | disregard\s+(your|the|all|previous|prior|earlier|above)
-    | forget\s+(your|the|all|previous|everything)
+    | disregard\s+(the\s+|all\s+|your\s+)*(previous|prior|earlier|above|instructions|context|rules)
+    | forget\s+(everything|all\s+(your\s+|previous\s+|prior\s+)?instructions
+              | your\s+(previous\s+|prior\s+)?instructions)
     | you\s+are\s+now\b
     | new\s+instructions\b
-    | (system|developer)\s+prompt
     | ^\s*(system|assistant)\s*:
     | pretend\s+to\s+be\b
-    | act\s+as\s+(if\s+)?(you|a|an)\b
+    | act\s+as\s+if\s+you\b
     | jailbreak | developer\s+mode
 """, re.I | re.X | re.M)
 
@@ -615,13 +620,15 @@ def classify_wake(m, model):
     who = sanitize(m.get("from_label") or m.get("from", "?"), 80)
     prompt = _TRIAGE_PROMPT.format(who=who, body=sanitize(m.get("body", "")))
     override = os.environ.get("ROOMS_TRIAGE_CMD")
-    argv = (override.split() if override else ["claude", "-p", "--model", model]) + [prompt]
+    argv = (shlex.split(override) if override else ["claude", "-p", "--model", model]) + [prompt]
     try:
         out = subprocess.run(argv, capture_output=True, text=True, timeout=60).stdout.upper()
     except Exception as e:
         print(f"[rooms] triage classifier failed ({e}); waking to be safe.", file=sys.stderr)
         return True
-    if "SKIP" in out and "WAKE" not in out:
+    # Require an exact one-word verdict. A hostile body can steer the cheap model
+    # into echoing "SKIP" amid other text; anything but a clean SKIP fails open.
+    if out.strip() == "SKIP":
         return False
     return True  # explicit WAKE, or ambiguous → fail open
 
@@ -658,10 +665,18 @@ def cmd_watch(args):
         for m in room_messages(r, rid, wm):
             wm = m["id"]
             got = True
-            if _wake_match(m, args.from_label, me):
+            # Track speakers on the same terms as the init scan above (everything
+            # but join/leave, regardless of who a message was addressed to), so the
+            # NEW SPEAKER flag can't misfire on an agent who's been active in the
+            # room but talking to someone else.
+            if m.get("kind") not in ("join", "leave"):
                 new_speaker = m.get("from") not in known_speakers
-                suspicious = injection_shaped(m.get("body", ""))
                 known_speakers.add(m.get("from"))
+                # Scan the peer-controlled label too, not just the body — a payload
+                # in from_label renders into the same wake line and must trip this.
+                suspicious = (injection_shaped(m.get("body", ""))
+                              or injection_shaped(m.get("from_label", "")))
+            if _wake_match(m, args.from_label, me):
                 if args.triage and not (new_speaker or suspicious):
                     # Ordinary message from a known peer — let the cheap model judge.
                     if not classify_wake(m, args.triage_model):
