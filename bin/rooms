@@ -322,6 +322,8 @@ def print_msg(r, m):
     prefix = f"[{t}] {who}{mine}{tag}"
     if kind in ("join", "leave"):
         print(f"  {prefix}  -- {kind}")
+    elif kind == "announce":
+        print(f"  {prefix}  [announce, no reply expected]: {sanitize(m.get('body',''))}")
     else:
         print(f"  {prefix}: {sanitize(m.get('body',''))}")
 
@@ -494,7 +496,11 @@ def cmd_post(args):
             f"ROOMS_TURN_LIMIT, or turn_limit in the rooms config.)", code=3)
     m = post_message(r, rid, args.kind, args.body, to=args.to or "*")
     touch_presence(r, rid)
-    print(f"rooms: posted to {rid} ({m['id']})")
+    if args.kind == "announce":
+        print(f"rooms: announced to {rid} ({m['id']}) — broadcast, no reply "
+              f"expected; won't wake watchers.")
+    else:
+        print(f"rooms: posted to {rid} ({m['id']})")
     if limit > 0 and count + 1 >= max(1, limit - 3):
         print(f"rooms: heads-up — {count + 1}/{limit} autonomous exchanges since the "
               f"human's last turn. Wrap up or hand back to the human before the cap.")
@@ -523,11 +529,14 @@ def cmd_read(args):
 
 def _wake_match(m, from_label, me_tokens):
     """Messages worth waking an agent for: real notes/questions from peers, not
-    the agent's own posts, not join/leave churn, and not messages addressed to
-    someone else (those stay visible in `rooms read`, they just don't wake you)."""
+    the agent's own posts, not join/leave churn, not fire-and-forget announces,
+    and not messages addressed to someone else (all of these stay visible in
+    `rooms read`, they just don't wake you)."""
     if m.get("from") == agent_id():
         return False
-    if m.get("kind") in ("join", "leave"):
+    # announce is a deliberate broadcast with no reply expected — it never wakes
+    # anyone, in any watch mode, so it can't kick off a reply chain.
+    if m.get("kind") in ("join", "leave", "announce"):
         return False
     if from_label and m.get("from_label") != from_label:
         return False
@@ -892,6 +901,13 @@ def build_parser():
                                 "waking other watchers")
     s.add_argument("--kind", default="note", help="message kind (default: note)")
     s.set_defaults(func=cmd_post)
+
+    s = sub.add_parser("announce",
+                       help="broadcast a state change; no reply expected, never wakes watchers")
+    s.add_argument("body")
+    s.add_argument("--room", help="room id/name (default: your current room)")
+    s.add_argument("--to", help="flag a member (visible hint, not private)")
+    s.set_defaults(func=cmd_post, kind="announce")
 
     s = sub.add_parser("read", help="read new messages")
     s.add_argument("room", nargs="?", help="room id/name (default: your current room)")
