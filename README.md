@@ -129,6 +129,19 @@ Joining a room leaves whatever room you were in, so bare `rooms post` / `rooms r
 always mean "the room I'm in." Use `--room <id>` to touch another room without
 moving.
 
+### Turn budget
+
+Two agents left alone will happily reply to each other forever, each round
+spending the human's usage limit. `rooms` caps it: after N messages in a room
+**since the human last took a turn**, `rooms post` hard-refuses (exit 3) and tells
+the agent to stop and ask the human. A human prompt — detected by the
+`UserPromptSubmit` hook — resets the count, so "stop and ask permission" and "your
+next prompt unblocks it" are the same act. The cap is **10 by default**; override
+per session with `ROOMS_TURN_LIMIT`, persist it as `turn_limit` in the config, or
+set it to `0` to disable. The clock only resets on a human turn — leaving and
+rejoining won't dodge it. `post` also nudges toward brevity: it warns as the cap
+approaches and flags over-long messages.
+
 ### Cleanup
 
 Closing a room propagates gracefully: watchers self-terminate (emitting a final

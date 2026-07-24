@@ -245,6 +245,56 @@ def room_messages(r, rid, since=""):
     return out
 
 
+# ------------------------------------------------------------- turn budget ---
+# Two agents left alone will happily reply to each other forever, each turn
+# burning the human's usage limit. The transport is the only place that sees
+# every message regardless of which agent is looping, so the cap lives here —
+# not in an agent's instructions, which a runaway loop stops honoring. The
+# counter is "messages posted to a room since the human last took a turn"; a
+# human prompt (the UserPromptSubmit hook) resets it, so "stop and ask the human
+# to continue" and "your next prompt clears the block" are one mechanism.
+DEFAULT_TURN_LIMIT = 10
+
+
+def turn_limit():
+    """Hard cap on autonomous exchanges. ROOMS_TURN_LIMIT env wins, then the
+    config's turn_limit, then the default. 0/negative disables the guard."""
+    raw = os.environ.get("ROOMS_TURN_LIMIT")
+    if raw is None:
+        raw = (read_json(CONFIG_PATH, {}) or {}).get("turn_limit")
+    if raw is None or raw == "":
+        return DEFAULT_TURN_LIMIT
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_TURN_LIMIT
+
+
+def turn_file(r, rid):
+    return room_dir(r, rid) / "turn.json"
+
+
+def reset_turn_budget(r, rid):
+    """Mark 'a human just took a turn' by moving the watermark past every current
+    message, so nothing already said counts against the next stretch. Called on
+    join (don't count backlog) and on every human prompt (a turn refreshes it)."""
+    if not room_exists(r, rid):
+        return
+    msgs = room_messages(r, rid)
+    write_json(turn_file(r, rid), {"watermark": msgs[-1]["id"] if msgs else ""})
+
+
+def autonomous_count(r, rid):
+    """How many messages have flowed in this room since the last human turn."""
+    ts = read_json(turn_file(r, rid))
+    if ts is None:
+        # Room predates the guard (or was never joined through it): start the
+        # clock now rather than counting a whole backlog as one runaway burst.
+        reset_turn_budget(r, rid)
+        return 0
+    return len(room_messages(r, rid, ts.get("watermark", "")))
+
+
 def fmt_age(seconds):
     seconds = int(seconds)
     if seconds < 60:
@@ -355,6 +405,7 @@ def cmd_start(args):
         "creator_id": agent_id(), "creator_label": my_label(r),
         "created": now(), "status": "open"})
     _join(r, rid)
+    reset_turn_budget(r, rid)
     print(f"rooms: created room '{args.name}' -> {rid}")
     print(f"       joined as {my_label(r)} ({agent_id()})")
     print_cheatsheet()
@@ -392,6 +443,10 @@ def cmd_join(args):
     members = len(glob.glob(str(room_dir(r, rid) / "members" / "*.json")))
     # Mark caught up: future 'rooms read' shows only messages that arrive from now on.
     write_json(cursor_file(r, rid), {"watermark": msgs[-1]["id"] if msgs else ""})
+    # NB: joining does NOT reset the turn budget — only a human turn (the hook)
+    # does. Otherwise an agent could dodge the cap by leaving and rejoining. A
+    # first join into a pre-existing room is handled lazily in autonomous_count,
+    # which starts the clock at 'now' so old backlog never counts.
     # Stay terse on join — no roster dump, no backlog. Use 'rooms summary' for that.
     print(f"rooms: joined '{room.get('name', rid)}' ({rid}) as {my_label(r)}")
     print(f"       {members} member(s), {len(msgs)} message(s) so far — "
@@ -426,9 +481,25 @@ def cmd_leave(args):
 def cmd_post(args):
     r = root()
     rid = resolve_room(r, args.room)
+    limit = turn_limit()
+    count = autonomous_count(r, rid) if limit > 0 else 0
+    if limit > 0 and count >= limit:
+        die(f"turn limit reached — {count} messages have been exchanged in {rid} "
+            f"since the human last took a turn (cap {limit}). This is a hard budget "
+            f"guard against agents looping unattended and burning the human's usage. "
+            f"STOP: do not post again. Tell the human plainly that this room has run "
+            f"{count} autonomous exchanges and ask whether to keep going — their next "
+            f"prompt clears the block automatically. (To raise the cap: set "
+            f"ROOMS_TURN_LIMIT, or turn_limit in the rooms config.)", code=3)
     m = post_message(r, rid, args.kind, args.body, to=args.to or "*")
     touch_presence(r, rid)
     print(f"rooms: posted to {rid} ({m['id']})")
+    if limit > 0 and count + 1 >= max(1, limit - 3):
+        print(f"rooms: heads-up — {count + 1}/{limit} autonomous exchanges since the "
+              f"human's last turn. Wrap up or hand back to the human before the cap.")
+    if len(args.body) > 1200:
+        print("rooms: that message is long. Keep room posts terse — say only what "
+              "the peer needs; push big or structured content to a file and post the path.")
 
 
 def cmd_read(args):
@@ -675,6 +746,10 @@ def cmd_hook(args):
             p = read_json(pf)
             if not p or p.get("status") == "left":
                 continue
+            # A human just took a turn — refresh this room's autonomous-exchange
+            # budget. This is also what clears a `rooms post` block: the human's
+            # prompt IS the "yes, keep going."
+            reset_turn_budget(r, rid)
             since = read_json(cursor_file(r, rid), {}).get("watermark", "")
             unread = [m for m in room_messages(r, rid, since) if m.get("from") != agent_id()]
             if unread:
