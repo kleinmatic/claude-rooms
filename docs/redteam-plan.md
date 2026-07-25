@@ -58,5 +58,10 @@ directly informs whether Haiku is safe as the "room monitor" gatekeeper).
   taken shortly after a `rooms read`).
 - Promotes the **Haiku room-monitor** from "future idea" to "needed" — a cheap
   screener that flags imperatives/injection before messages reach agents.
+  *(Initial implementation now shipped: `rooms watch --triage` runs a cheap-model
+  screener that deterministically flags injection-shaped messages and new speakers.
+  The eval should measure its effectiveness rather than treat it as unbuilt.)*
 - **Circuit-breakers** on inter-agent chatter (rate limits, loop detection) so a
-  worm — or a politeness loop — can't run away.
+  worm — or a politeness loop — can't run away. *(Initial implementation now
+  shipped: the turn budget caps messages per room since the last human turn, and
+  `rooms announce` is a fire-and-forget kind that never wakes a watcher.)*
