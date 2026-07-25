@@ -139,7 +139,8 @@ and messages carrying instruction-override phrasing (`possible prompt injection`
 These make the highest-judgment messages loud — they don't block anything, and
 they aren't the safety guarantee (that's structural: room messages are never
 executed). The injection tripwire targets override/persona-hijack phrasing, not
-ordinary imperatives or code talk, so normal coordination doesn't cry wolf.
+ordinary imperatives or code talk, so normal coordination doesn't cry wolf. Being
+deterministic, the tags render under a plain `rooms watch` too, not only `--triage`.
 
 ### One room at a time
 

@@ -355,7 +355,9 @@ def cmd_init(args):
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     # Merge, don't clobber: re-running init (upgrade, repoint --root) must preserve
     # other persisted keys like turn_limit.
-    cfg = read_json(CONFIG_PATH, {}) or {}
+    cfg = read_json(CONFIG_PATH, {})
+    if not isinstance(cfg, dict):  # a corrupt/non-object config gets replaced, not indexed
+        cfg = {}
     cfg["root"] = str(r)
     write_json(CONFIG_PATH, cfg)
     verb = "attached this install to existing bus at" if existing else "initialized bus at"
@@ -620,8 +622,10 @@ def classify_wake(m, model):
     who = sanitize(m.get("from_label") or m.get("from", "?"), 80)
     prompt = _TRIAGE_PROMPT.format(who=who, body=sanitize(m.get("body", "")))
     override = os.environ.get("ROOMS_TRIAGE_CMD")
-    argv = (shlex.split(override) if override else ["claude", "-p", "--model", model]) + [prompt]
     try:
+        # shlex.split is inside the try: a malformed override (unbalanced quote)
+        # raises ValueError, and like any classifier failure that must fail open.
+        argv = (shlex.split(override) if override else ["claude", "-p", "--model", model]) + [prompt]
         out = subprocess.run(argv, capture_output=True, text=True, timeout=60).stdout.upper()
     except Exception as e:
         print(f"[rooms] triage classifier failed ({e}); waking to be safe.", file=sys.stderr)
@@ -668,7 +672,9 @@ def cmd_watch(args):
             # Track speakers on the same terms as the init scan above (everything
             # but join/leave, regardless of who a message was addressed to), so the
             # NEW SPEAKER flag can't misfire on an agent who's been active in the
-            # room but talking to someone else.
+            # room but talking to someone else. Default False so the wake path below
+            # never reads an unbound name even if _wake_match's filter set drifts.
+            new_speaker = suspicious = False
             if m.get("kind") not in ("join", "leave"):
                 new_speaker = m.get("from") not in known_speakers
                 known_speakers.add(m.get("from"))
@@ -686,9 +692,11 @@ def cmd_watch(args):
                         print(f"[rooms] triage: skipped a message from {who}.", file=sys.stderr)
                         continue
                 # New speakers and injection-shaped messages skip the classifier
-                # entirely and are always emitted, tagged for the primary agent.
-                print(_wake_line(m, new_speaker=new_speaker and args.triage,
-                                 suspicious=suspicious and args.triage), flush=True)
+                # entirely and are always emitted. The tags are deterministic
+                # security signals, so they render triage on or off — the docstring
+                # promises a failing/absent classifier can't suppress them.
+                print(_wake_line(m, new_speaker=new_speaker,
+                                 suspicious=suspicious), flush=True)
         if got:
             last_activity = now()
         elif idle_limit and now() - last_activity > idle_limit:
