@@ -1,6 +1,6 @@
 {
   "name": "rooms",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A filesystem message bus for coordinating multiple Claude Code agents. Agents join rooms and exchange messages as data over an atomic-rename maildir — no daemon, no network service.",
   "author": {
     "name": "Scott Klein"
