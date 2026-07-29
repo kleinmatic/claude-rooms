@@ -85,7 +85,8 @@ rooms init --root /mnt/bus  # ...or point at a shared/sshfs mount (multi-machine
 ```
 
 `rooms init` validates that atomic rename works at the chosen root — run it before
-pointing `--root` at an sshfs mount.
+pointing `--root` at an sshfs mount. Multi-machine use works but isn't a supported
+configuration; it's your call whether the mount is trustworthy enough.
 
 ## Usage
 
@@ -204,38 +205,19 @@ automatically if a session ends abruptly.
 ```
 
 Writes are lock-free: write to `msgs/tmp/`, then `rename()` into `msgs/new/`.
-Rename atomicity is the only guarantee needed — which is exactly why this survives
-sshfs, where file locks do not. Reads are per-agent: each agent tracks its own
-cursor, so every agent independently "subscribes" to a room.
+Rename atomicity is the only guarantee needed — which is why this still works on
+shared directories where file locks don't. Reads are per-agent: each agent tracks
+its own cursor, so every agent independently "subscribes" to a room. Both halves
+are borrowed: see [where these ideas come from](docs/stealing-from-unix.md).
 
 ## Roadmap
 
-- **v0.2 — MCP-native tools** — expose room operations as first-class MCP tools so
-  agents call them directly instead of shelling out (kills verb-guessing and
-  shell-quoting; structured I/O; per-tool permissions). Will take the official
-  `mcp` Python SDK as a single dependency (run via `uv`) rather than hand-rolling a
-  protocol server. The CLI stays for humans and as the Monitor watch-source. See
-  [docs/v0.2-mcp-native.md](docs/v0.2-mcp-native.md).
-- **Multi-machine hardening** — heartbeat liveness, sshfs mount-health checks,
-  clock-skew-proof (id-based) cursors.
-- **Secure rooms / access gating** — the creator-only close check is currently a
-  cooperative guardrail, not enforced auth; a real version signs identity.
-- **Admission control** — a host-owned allowlist so an *unadmitted* participant's
-  messages are held out of every agent's context until the creator runs `rooms
-  admit`. Enforced read-side (the boundary that actually protects you — a rogue
-  same-user process writing raw files is an OS problem, not rooms'). New-speaker
-  detection already exists as the doorbell; this adds the lock.
-- **A "room monitor" agent** — a cheap model (e.g. Haiku) that sits in a room and
-  screens messages for prompt-injection attempts, gates who may join, and enforces
-  policy. This is the likely *comprehensive* security model: it subsumes admission
-  control (approving/denying automatically) and closes the loopholes the narrower
-  deterministic tripwires leave open — making a room genuinely secure rather than
-  trust-based.
-- **`rooms transcript`** — dump a verbatim copy of a room to a file on demand, so a
-  participant can save context to its own project before an (ephemeral) room closes.
-- **Red-team eval** — measure, in an isolated sandbox, how much an agent will
-  actually *do* based on room messages (delete a file? install a plugin? relay a
-  command to peers?). Plan: [docs/redteam-plan.md](docs/redteam-plan.md).
+Planned work is phased in **[PROJECT_PLAN.md](PROJECT_PLAN.md)**, ordered by
+dependency. The short version: finish the ephemeral contract (`rooms transcript`),
+then the red-team eval ([plan](docs/redteam-plan.md)), which is the gate deciding
+what hardening is actually needed and what model a `/rooms:monitor` peer agent can
+safely run on. MCP-native tools ([design](docs/v0.2-mcp-native.md)) are designed
+but parked until SDKs support the MCP `2026-07-28` revision.
 
 ## License
 
