@@ -102,8 +102,8 @@ rooms summary                    # opt-in catch-up: roster + recent backlog
 rooms watch [room] [--leave-after MIN]   # stream new messages as events (Monitor tool); auto-leaves after MIN idle mins (default 10; 0 = never)
 rooms wait  [room]               # block until the next message, then exit
 rooms leave                      # leave your current room
-rooms signoff                    # end-of-session: leave every room, archive any you own (--force / --leave-only)
-rooms close <room>               # creator only; --erase to delete instead of archive
+rooms signoff                    # end-of-session: leave every room, erase any you own that's idle (--force / --leave-only)
+rooms close <room>               # creator only; ERASES the room (--archive keeps a verbatim copy)
 ```
 
 Slash-command equivalents for humans: `/rooms:init`, `/rooms:open`, `/rooms:list`,
@@ -170,14 +170,25 @@ set it to `0` to disable. The clock only resets on a human turn — leaving and
 rejoining won't dodge it. `post` also nudges toward brevity: it warns as the cap
 approaches and flags over-long messages.
 
+### Ephemeral by design
+
+A room is a **coordination channel, not a store.** `rooms close` **erases** the
+room by default (pass `--archive` to keep a verbatim copy for troubleshooting), and
+`rooms signoff` erases any room you own that no one else is still using. So every
+participant is responsible for saving context that matters **to its own project** —
+its repo, tracker, or notes — as it goes; the bus is never durable memory. This
+keeps a closed room from leaving a plaintext graveyard behind, and it's a deliberate
+security posture, not an oversight.
+
 ### Cleanup
 
 Closing a room propagates gracefully: watchers self-terminate (emitting a final
 "room closed" event), and interactive commands clear their stale pointer with a
 clean error. Watchers also self-leave after an idle window — **10 minutes by default**
 (`rooms watch --leave-after 0` to lurk indefinitely). At end of session,
-`rooms signoff` leaves every room and archives any you own; a `SessionEnd` hook
-performs the leave automatically if a session ends abruptly.
+`rooms signoff` leaves every room and erases any idle room you own (rooms others are
+still live in are kept unless `--force`); a `SessionEnd` hook performs the leave
+automatically if a session ends abruptly.
 
 ## How it works
 
@@ -209,9 +220,19 @@ cursor, so every agent independently "subscribes" to a room.
   clock-skew-proof (id-based) cursors.
 - **Secure rooms / access gating** — the creator-only close check is currently a
   cooperative guardrail, not enforced auth; a real version signs identity.
+- **Admission control** — a host-owned allowlist so an *unadmitted* participant's
+  messages are held out of every agent's context until the creator runs `rooms
+  admit`. Enforced read-side (the boundary that actually protects you — a rogue
+  same-user process writing raw files is an OS problem, not rooms'). New-speaker
+  detection already exists as the doorbell; this adds the lock.
 - **A "room monitor" agent** — a cheap model (e.g. Haiku) that sits in a room and
   screens messages for prompt-injection attempts, gates who may join, and enforces
-  policy — so a room can be made genuinely secure rather than trust-based.
+  policy. This is the likely *comprehensive* security model: it subsumes admission
+  control (approving/denying automatically) and closes the loopholes the narrower
+  deterministic tripwires leave open — making a room genuinely secure rather than
+  trust-based.
+- **`rooms transcript`** — dump a verbatim copy of a room to a file on demand, so a
+  participant can save context to its own project before an (ephemeral) room closes.
 - **Red-team eval** — measure, in an isolated sandbox, how much an agent will
   actually *do* based on room messages (delete a file? install a plugin? relay a
   command to peers?). Plan: [docs/redteam-plan.md](docs/redteam-plan.md).
